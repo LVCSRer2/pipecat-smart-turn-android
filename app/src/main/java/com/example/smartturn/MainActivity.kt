@@ -1,6 +1,8 @@
 package com.example.smartturn
 
 import android.Manifest
+import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.media.AudioFormat
@@ -8,11 +10,14 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Bundle
 import android.util.Log
+import android.view.Menu
+import android.view.MenuItem
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.preference.PreferenceManager
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
@@ -25,8 +30,6 @@ class MainActivity : AppCompatActivity() {
         const val REQUEST_RECORD_AUDIO_PERMISSION = 200
         const val SAMPLE_RATE = 16000
         const val CHUNK_SIZE = 512
-        const val STOP_MS = 1000
-        const val MAX_DURATION_SAMPLES = 8 * 16000 // 8 seconds
         const val TAG = "SmartTurnDemo"
     }
 
@@ -43,10 +46,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var melSpectrogram: MelSpectrogram
     private lateinit var ortEnv: OrtEnvironment
     private lateinit var smartTurnSession: OrtSession
+    private lateinit var prefs: SharedPreferences
 
     private val speechSegment = mutableListOf<Float>()
     private var trailingSilenceSamples = 0
     private var isSpeechActive = false
+
+    // Dynamic Settings
+    private var stopMs = 1000
+    private var vadThreshold = 0.5f
+    private var eotThreshold = 0.5f
+    private var maxWindowSec = 8
+    private var inferenceMode = "native"
+    private var displayTimeMs = 2000
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,6 +68,9 @@ class MainActivity : AppCompatActivity() {
         probabilityText = findViewById(R.id.probabilityText)
         recordButton = findViewById(R.id.recordButton)
         defaultTextColor = statusLabel.currentTextColor
+
+        prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        loadSettings()
 
         recordButton.setOnClickListener {
             if (isRecording) {
@@ -68,19 +83,44 @@ class MainActivity : AppCompatActivity() {
         initModels()
     }
 
+    private fun loadSettings() {
+        stopMs = prefs.getInt("trailing_silence", 1000)
+        vadThreshold = prefs.getInt("vad_sensitivity", 50) / 100f
+        eotThreshold = prefs.getInt("eot_threshold", 50) / 100f
+        maxWindowSec = prefs.getString("max_window", "8")?.toInt() ?: 8
+        inferenceMode = prefs.getString("inference_mode", "native") ?: "native"
+        displayTimeMs = prefs.getInt("display_time", 2000)
+        Log.d(TAG, "Settings loaded: stopMs=$stopMs, vad=$vadThreshold, eot=$eotThreshold, mode=$inferenceMode")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        loadSettings()
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.main_menu, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId == R.id.action_settings) {
+            startActivity(Intent(this, SettingsActivity::class.java))
+            return true
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
     private fun initModels() {
         try {
             ortEnv = OrtEnvironment.getEnvironment()
             sileroVad = SileroVAD(this)
             melSpectrogram = MelSpectrogram(this)
-            
             val modelBytes = assets.open("smart-turn-v3.1-cpu.onnx").readBytes()
             smartTurnSession = ortEnv.createSession(modelBytes)
-            
-            Log.d(TAG, "Models initialized successfully")
             updateStatus("Models Ready", defaultTextColor)
         } catch (e: Exception) {
-            Log.e(TAG, "Error initializing models: ${e.message}")
+            Log.e(TAG, "Error: ${e.message}")
             updateStatus("Error: Models missing", Color.RED)
         }
     }
@@ -93,27 +133,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRecordingWithPermission() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this,
-                arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_RECORD_AUDIO_PERMISSION)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_RECORD_AUDIO_PERMISSION)
         } else {
-            startRecording()
-        }
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_RECORD_AUDIO_PERMISSION && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             startRecording()
         }
     }
 
     private fun startRecording() {
         val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            return
-        }
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
         
         audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
         if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) return
@@ -127,9 +156,7 @@ class MainActivity : AppCompatActivity() {
             val readBuffer = ShortArray(CHUNK_SIZE)
             while (isActive && isRecording) {
                 val readCount = audioRecord?.read(readBuffer, 0, CHUNK_SIZE) ?: 0
-                if (readCount > 0) {
-                    processAudioChunk(readBuffer, readCount)
-                }
+                if (readCount > 0) processAudioChunk(readBuffer, readCount)
             }
         }
     }
@@ -152,7 +179,7 @@ class MainActivity : AppCompatActivity() {
         for (i in 0 until count) chunk[i] = shorts[i] / 32768.0f
         val prob = sileroVad.predict(chunk)
         
-        if (prob > 0.5f) {
+        if (prob > vadThreshold) {
             if (!isSpeechActive) {
                 isSpeechActive = true
                 updateStatus("Speech Detected", defaultTextColor)
@@ -164,11 +191,12 @@ class MainActivity : AppCompatActivity() {
 
         if (isSpeechActive) {
             for (f in chunk) speechSegment.add(f)
-            if (speechSegment.size > MAX_DURATION_SAMPLES) {
-                repeat(speechSegment.size - MAX_DURATION_SAMPLES) { speechSegment.removeAt(0) }
+            val maxSamples = maxWindowSec * SAMPLE_RATE
+            if (speechSegment.size > maxSamples) {
+                repeat(speechSegment.size - maxSamples) { speechSegment.removeAt(0) }
             }
 
-            if (trailingSilenceSamples >= (STOP_MS * SAMPLE_RATE / 1000)) {
+            if (trailingSilenceSamples >= (stopMs * SAMPLE_RATE / 1000)) {
                 runInference()
                 isSpeechActive = false
                 speechSegment.clear()
@@ -185,17 +213,37 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val audio = speechSegment.toFloatArray()
-
         updateStatus("Analyzing...", defaultTextColor)
 
-        // 1. Native Feature Extraction
-        val (melNative, timeMel) = melSpectrogram.extractNative(audio)
+        val nFrames = maxWindowSec * 100
+        var melData: FloatArray? = null
+        var timeMel: Long = 0
+        var timeKotlin: Long = -1
 
-        // 2. Smart Turn ONNX Inference (EOT Determination)
+        when (inferenceMode) {
+            "native" -> {
+                val (res, time) = melSpectrogram.extractNative(audio, nFrames)
+                melData = res
+                timeMel = time
+            }
+            "kotlin" -> {
+                val (res, time) = melSpectrogram.extractKotlin(audio, nFrames)
+                melData = res
+                timeMel = time
+            }
+            "both" -> {
+                val (resK, tK) = melSpectrogram.extractKotlin(audio, nFrames)
+                val (resN, tN) = melSpectrogram.extractNative(audio, nFrames)
+                melData = resN
+                timeMel = tN
+                timeKotlin = tK
+            }
+        }
+
         var inferenceProb = 0.0f
         val startInf = System.currentTimeMillis()
         try {
-            val inputTensor = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(melNative), longArrayOf(1, 80, 800))
+            val inputTensor = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(melData!!), longArrayOf(1, 80, nFrames.toLong()))
             val results = smartTurnSession.run(mapOf("input_features" to inputTensor))
             results.use {
                 val output = results[0].value as Array<FloatArray>
@@ -209,18 +257,21 @@ class MainActivity : AppCompatActivity() {
         withContext(Dispatchers.Main) {
             val resultText = StringBuilder()
             resultText.append("EOT Prob: %.4f\n".format(inferenceProb))
-            resultText.append("Mel Extraction: %d ms\n".format(timeMel))
+            if (inferenceMode == "both") {
+                resultText.append("K: %d ms | N: %d ms\n".format(timeKotlin, timeMel))
+            } else {
+                resultText.append("Mel Extraction: %d ms\n".format(timeMel))
+            }
             resultText.append("EOT Inference: %d ms".format(timeInf))
             probabilityText.text = resultText.toString()
 
-            if (inferenceProb > 0.5) {
+            if (inferenceProb > eotThreshold) {
                 updateStatus("Turn Complete!", Color.RED)
             } else {
                 updateStatus("Continued", Color.BLUE)
             }
             
-            // Return to Listening after 2 seconds
-            delay(2000)
+            delay(displayTimeMs.toLong())
             if (isRecording) updateStatus("Listening", defaultTextColor)
         }
     }

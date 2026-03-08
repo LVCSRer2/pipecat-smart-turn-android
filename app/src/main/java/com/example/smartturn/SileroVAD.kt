@@ -23,7 +23,6 @@ class SileroVAD(context: Context) {
      * Predict speech probability for a 512-sample chunk (16kHz).
      */
     fun predict(chunk: FloatArray): Float {
-        // Concatenate context (64 samples) + chunk (512 samples) = 576 samples
         val inputData = FloatArray(64 + 512)
         System.arraycopy(contextBuffer, 0, inputData, 0, 64)
         System.arraycopy(chunk, 0, inputData, 64, 512)
@@ -43,7 +42,6 @@ class SileroVAD(context: Context) {
             val output = results[0].value as Array<FloatArray>
             val newState = results[1].value as Array<Array<FloatArray>>
             
-            // Update state
             var pos = 0
             for (i in 0 until 2) {
                 for (j in 0 until 1) {
@@ -53,9 +51,7 @@ class SileroVAD(context: Context) {
                 }
             }
 
-            // Update contextBuffer with last 64 samples of input
             System.arraycopy(inputData, inputData.size - 64, contextBuffer, 0, 64)
-
             return output[0][0]
         }
     }

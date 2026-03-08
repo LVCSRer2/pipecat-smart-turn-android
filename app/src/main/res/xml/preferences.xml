@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory android:title="Voice Activity Detection (VAD)">
+        <SeekBarPreference
+            android:defaultValue="1000"
+            android:key="trailing_silence"
+            android:max="3000"
+            app:min="200"
+            app:showSeekBarValue="true"
+            android:title="Trailing Silence (ms)"
+            android:summary="Time to wait after speech ends before triggering Smart Turn" />
+
+        <SeekBarPreference
+            android:defaultValue="50"
+            android:key="vad_sensitivity"
+            android:max="95"
+            app:min="5"
+            app:showSeekBarValue="true"
+            android:title="VAD Sensitivity (%)"
+            android:summary="Lower values make speech detection more sensitive" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Smart Turn (EOT)">
+        <SeekBarPreference
+            android:defaultValue="50"
+            android:key="eot_threshold"
+            android:max="95"
+            app:min="5"
+            app:showSeekBarValue="true"
+            android:title="EOT Threshold (%)"
+            android:summary="Probability threshold to determine turn completion" />
+
+        <ListPreference
+            android:defaultValue="8"
+            android:entries="@array/window_entries"
+            android:entryValues="@array/window_values"
+            android:key="max_window"
+            android:title="Max Analysis Window"
+            android:summary="Maximum audio duration used for context" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Inference &amp; UI">
+        <ListPreference
+            android:defaultValue="native"
+            android:entries="@array/mode_entries"
+            android:entryValues="@array/mode_values"
+            android:key="inference_mode"
+            android:title="Inference Mode"
+            android:summary="Switch between C++ Native and Optimized Kotlin" />
+
+        <SeekBarPreference
+            android:defaultValue="2000"
+            android:key="display_time"
+            android:max="5000"
+            app:min="500"
+            app:showSeekBarValue="true"
+            android:title="Results Display Time (ms)"
+            android:summary="How long to show the analysis result on screen" />
+    </PreferenceCategory>
+
+</PreferenceScreen>

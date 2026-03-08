@@ -1,3 +1,25 @@
 <resources>
     <string name="app_name">SmartTurnDemo</string>
+
+    <string-array name="window_entries">
+        <item>4 Seconds</item>
+        <item>6 Seconds</item>
+        <item>8 Seconds</item>
+    </string-array>
+    <string-array name="window_values">
+        <item>4</item>
+        <item>6</item>
+        <item>8</item>
+    </string-array>
+
+    <string-array name="mode_entries">
+        <item>Native (C++)</item>
+        <item>Kotlin (Optimized)</item>
+        <item>Comparison Mode (Both)</item>
+    </string-array>
+    <string-array name="mode_values">
+        <item>native</item>
+        <item>kotlin</item>
+        <item>both</item>
+    </string-array>
 </resources>
