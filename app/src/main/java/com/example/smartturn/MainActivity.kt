@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var vadDataSet: LineDataSet
     private lateinit var eotDataSet: LineDataSet
+    private lateinit var continuedDataSet: LineDataSet
     private var chartXIndex = 0f
 
     private var stopMs = 1000
@@ -69,7 +70,6 @@ class MainActivity : AppCompatActivity() {
     private var eotThreshold = 0.5f
     private var maxWindowSec = 8
     private var inferenceMode = "native"
-    private var displayTimeMs = 2000
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -107,7 +107,7 @@ class MainActivity : AppCompatActivity() {
         val data = LineData()
         probabilityChart.data = data
 
-        vadDataSet = LineDataSet(mutableListOf(), "Speech Prob (VAD)")
+        vadDataSet = LineDataSet(mutableListOf(), "Speech (VAD)")
         vadDataSet.color = Color.GREEN
         vadDataSet.setDrawCircles(false)
         vadDataSet.setDrawValues(false)
@@ -115,7 +115,7 @@ class MainActivity : AppCompatActivity() {
         vadDataSet.axisDependency = YAxis.AxisDependency.LEFT
         data.addDataSet(vadDataSet)
 
-        eotDataSet = LineDataSet(mutableListOf(), "Turn Complete (EOT)")
+        eotDataSet = LineDataSet(mutableListOf(), "Turn Complete")
         eotDataSet.color = Color.RED
         eotDataSet.setCircleColor(Color.RED)
         eotDataSet.circleRadius = 6f
@@ -125,6 +125,17 @@ class MainActivity : AppCompatActivity() {
         eotDataSet.setDrawCircles(true)
         eotDataSet.axisDependency = YAxis.AxisDependency.LEFT
         data.addDataSet(eotDataSet)
+
+        continuedDataSet = LineDataSet(mutableListOf(), "Continued")
+        continuedDataSet.color = Color.BLUE
+        continuedDataSet.setCircleColor(Color.BLUE)
+        continuedDataSet.circleRadius = 6f
+        continuedDataSet.setDrawCircleHole(false)
+        continuedDataSet.setDrawValues(false)
+        continuedDataSet.lineWidth = 0f
+        continuedDataSet.setDrawCircles(true)
+        continuedDataSet.axisDependency = YAxis.AxisDependency.LEFT
+        data.addDataSet(continuedDataSet)
 
         val xl = probabilityChart.xAxis
         xl.setDrawGridLines(true)
@@ -145,7 +156,6 @@ class MainActivity : AppCompatActivity() {
         eotThreshold = prefs.getInt("eot_threshold", 50) / 100f
         maxWindowSec = prefs.getString("max_window", "8")?.toInt() ?: 8
         inferenceMode = prefs.getString("inference_mode", "native") ?: "native"
-        displayTimeMs = prefs.getInt("display_time", 2000)
     }
 
     override fun onResume() {
@@ -215,6 +225,7 @@ class MainActivity : AppCompatActivity() {
             
             vadDataSet.clear()
             eotDataSet.clear()
+            continuedDataSet.clear()
             chartXIndex = 0f
             probabilityChart.data.notifyDataChanged()
             probabilityChart.notifyDataSetChanged()
@@ -297,8 +308,13 @@ class MainActivity : AppCompatActivity() {
 
             if (vadDataSet.entryCount > MAX_CHART_POINTS) {
                 vadDataSet.removeFirst()
-                while (eotDataSet.entryCount > 0 && eotDataSet.getEntryForIndex(0).x < vadDataSet.getEntryForIndex(0).x) {
+                val minX = vadDataSet.getEntryForIndex(0).x
+                
+                while (eotDataSet.entryCount > 0 && eotDataSet.getEntryForIndex(0).x < minX) {
                     eotDataSet.removeFirst()
+                }
+                while (continuedDataSet.entryCount > 0 && continuedDataSet.getEntryForIndex(0).x < minX) {
+                    continuedDataSet.removeFirst()
                 }
             }
 
@@ -362,21 +378,27 @@ class MainActivity : AppCompatActivity() {
         withContext(Dispatchers.Main) {
             if (!isRecording) return@withContext
             
-            probabilityChart.data.addEntry(Entry(currentX, inferenceProb), 1)
+            if (inferenceProb > eotThreshold) {
+                probabilityChart.data.addEntry(Entry(currentX, inferenceProb), 1)
+                updateStatus("Turn Complete!", Color.RED)
+            } else {
+                probabilityChart.data.addEntry(Entry(currentX, inferenceProb), 2)
+                updateStatus("Continued", Color.BLUE)
+            }
+            
             probabilityChart.data.notifyDataChanged()
             probabilityChart.notifyDataSetChanged()
 
             val resultText = "EOT Prob: %.4f\nMel: %d ms | EOT: %d ms".format(inferenceProb, timeMel, timeInf)
             probabilityText.text = resultText
-
-            if (inferenceProb > eotThreshold) {
-                updateStatus("Turn Complete!", Color.RED)
-            } else {
-                updateStatus("Continued", Color.BLUE)
-            }
             
-            delay(displayTimeMs.toLong())
-            if (isRecording) updateStatus("Listening", defaultTextColor)
+            // Immediately back to Listening (or after a very short delay for perception)
+            // Removed 2 second delay
+            if (isRecording) {
+                // Keep the result text visible but update status to show we're ready again
+                delay(100) // Minimal flicker prevention
+                updateStatus("Listening", defaultTextColor)
+            }
         }
     }
 
