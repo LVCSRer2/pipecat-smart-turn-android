@@ -21,6 +21,11 @@ import androidx.preference.PreferenceManager
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import com.github.mikephil.charting.charts.LineChart
+import com.github.mikephil.charting.components.YAxis
+import com.github.mikephil.charting.data.Entry
+import com.github.mikephil.charting.data.LineData
+import com.github.mikephil.charting.data.LineDataSet
 import kotlinx.coroutines.*
 import java.nio.FloatBuffer
 
@@ -30,6 +35,7 @@ class MainActivity : AppCompatActivity() {
         const val REQUEST_RECORD_AUDIO_PERMISSION = 200
         const val SAMPLE_RATE = 16000
         const val CHUNK_SIZE = 512
+        const val MAX_CHART_POINTS = 300
         const val TAG = "SmartTurnDemo"
     }
 
@@ -40,6 +46,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusLabel: TextView
     private lateinit var probabilityText: TextView
     private lateinit var recordButton: Button
+    private lateinit var probabilityChart: LineChart
+    
     private var defaultTextColor: Int = Color.BLACK
 
     private lateinit var sileroVad: SileroVAD
@@ -52,7 +60,10 @@ class MainActivity : AppCompatActivity() {
     private var trailingSilenceSamples = 0
     private var isSpeechActive = false
 
-    // Dynamic Settings
+    private lateinit var vadDataSet: LineDataSet
+    private lateinit var eotDataSet: LineDataSet
+    private var chartXIndex = 0f
+
     private var stopMs = 1000
     private var vadThreshold = 0.5f
     private var eotThreshold = 0.5f
@@ -67,8 +78,10 @@ class MainActivity : AppCompatActivity() {
         statusLabel = findViewById(R.id.statusLabel)
         probabilityText = findViewById(R.id.probabilityText)
         recordButton = findViewById(R.id.recordButton)
+        probabilityChart = findViewById(R.id.probabilityChart)
         defaultTextColor = statusLabel.currentTextColor
 
+        initChart()
         prefs = PreferenceManager.getDefaultSharedPreferences(this)
         loadSettings()
 
@@ -83,6 +96,49 @@ class MainActivity : AppCompatActivity() {
         initModels()
     }
 
+    private fun initChart() {
+        probabilityChart.description.isEnabled = false
+        probabilityChart.setTouchEnabled(false)
+        probabilityChart.isDragEnabled = false
+        probabilityChart.setScaleEnabled(false)
+        probabilityChart.setPinchZoom(false)
+        probabilityChart.setBackgroundColor(Color.WHITE)
+
+        val data = LineData()
+        probabilityChart.data = data
+
+        vadDataSet = LineDataSet(mutableListOf(), "Speech Prob (VAD)")
+        vadDataSet.color = Color.GREEN
+        vadDataSet.setDrawCircles(false)
+        vadDataSet.setDrawValues(false)
+        vadDataSet.lineWidth = 2f
+        vadDataSet.axisDependency = YAxis.AxisDependency.LEFT
+        data.addDataSet(vadDataSet)
+
+        eotDataSet = LineDataSet(mutableListOf(), "Turn Complete (EOT)")
+        eotDataSet.color = Color.RED
+        eotDataSet.setCircleColor(Color.RED)
+        eotDataSet.circleRadius = 6f
+        eotDataSet.setDrawCircleHole(false)
+        eotDataSet.setDrawValues(false)
+        eotDataSet.lineWidth = 0f
+        eotDataSet.setDrawCircles(true)
+        eotDataSet.axisDependency = YAxis.AxisDependency.LEFT
+        data.addDataSet(eotDataSet)
+
+        val xl = probabilityChart.xAxis
+        xl.setDrawGridLines(true)
+        xl.isEnabled = true
+
+        val leftAxis = probabilityChart.axisLeft
+        leftAxis.axisMaximum = 1.1f
+        leftAxis.axisMinimum = -0.1f
+        leftAxis.setDrawGridLines(true)
+
+        val rightAxis = probabilityChart.axisRight
+        rightAxis.isEnabled = false
+    }
+
     private fun loadSettings() {
         stopMs = prefs.getInt("trailing_silence", 1000)
         vadThreshold = prefs.getInt("vad_sensitivity", 50) / 100f
@@ -90,7 +146,6 @@ class MainActivity : AppCompatActivity() {
         maxWindowSec = prefs.getString("max_window", "8")?.toInt() ?: 8
         inferenceMode = prefs.getString("inference_mode", "native") ?: "native"
         displayTimeMs = prefs.getInt("display_time", 2000)
-        Log.d(TAG, "Settings loaded: stopMs=$stopMs, vad=$vadThreshold, eot=$eotThreshold, mode=$inferenceMode")
     }
 
     override fun onResume() {
@@ -120,7 +175,7 @@ class MainActivity : AppCompatActivity() {
             smartTurnSession = ortEnv.createSession(modelBytes)
             updateStatus("Models Ready", defaultTextColor)
         } catch (e: Exception) {
-            Log.e(TAG, "Error: ${e.message}")
+            Log.e(TAG, "Error initializing: ${e.message}")
             updateStatus("Error: Models missing", Color.RED)
         }
     }
@@ -140,32 +195,55 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_RECORD_AUDIO_PERMISSION && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            startRecording()
+        }
+    }
+
     private fun startRecording() {
-        val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
-        
-        audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
-        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) return
+        try {
+            val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+            
+            audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
+            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) return
 
-        audioRecord?.startRecording()
-        isRecording = true
-        runOnUiThread { recordButton.text = "Stop Recording" }
-        updateStatus("Listening", defaultTextColor)
+            audioRecord?.startRecording()
+            isRecording = true
+            
+            vadDataSet.clear()
+            eotDataSet.clear()
+            chartXIndex = 0f
+            probabilityChart.data.notifyDataChanged()
+            probabilityChart.notifyDataSetChanged()
+            probabilityChart.invalidate()
 
-        recordingJob = CoroutineScope(Dispatchers.IO).launch {
-            val readBuffer = ShortArray(CHUNK_SIZE)
-            while (isActive && isRecording) {
-                val readCount = audioRecord?.read(readBuffer, 0, CHUNK_SIZE) ?: 0
-                if (readCount > 0) processAudioChunk(readBuffer, readCount)
+            runOnUiThread { recordButton.text = "Stop Recording" }
+            updateStatus("Listening", defaultTextColor)
+
+            recordingJob = CoroutineScope(Dispatchers.IO).launch {
+                val readBuffer = ShortArray(CHUNK_SIZE)
+                while (isActive && isRecording) {
+                    val readCount = audioRecord?.read(readBuffer, 0, CHUNK_SIZE) ?: 0
+                    if (readCount > 0) processAudioChunk(readBuffer, readCount)
+                }
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Start recording error: ${e.message}")
         }
     }
 
     private fun stopRecording() {
         isRecording = false
         recordingJob?.cancel()
-        audioRecord?.stop()
-        audioRecord?.release()
+        try {
+            audioRecord?.stop()
+            audioRecord?.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Stop audio error: ${e.message}")
+        }
         audioRecord = null
         runOnUiThread { recordButton.text = "Start Recording" }
         updateStatus("Stopped", defaultTextColor)
@@ -175,10 +253,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private suspend fun processAudioChunk(shorts: ShortArray, count: Int) {
+        if (!isRecording) return
         val chunk = FloatArray(count)
         for (i in 0 until count) chunk[i] = shorts[i] / 32768.0f
         val prob = sileroVad.predict(chunk)
         
+        addChartEntry(prob)
+
         if (prob > vadThreshold) {
             if (!isSpeechActive) {
                 isSpeechActive = true
@@ -205,45 +286,69 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun runInference() {
-        if (speechSegment.isEmpty()) {
-            updateStatus("No Speech", defaultTextColor)
-            delay(1500)
-            if (isRecording) updateStatus("Listening", defaultTextColor)
-            return
+    private fun addChartEntry(vadProb: Float) {
+        if (!isRecording) return
+        runOnUiThread {
+            if (!isRecording) return@runOnUiThread
+            val data = probabilityChart.data ?: return@runOnUiThread
+            
+            data.addEntry(Entry(chartXIndex, vadProb), 0)
+            chartXIndex += 1f
+
+            if (vadDataSet.entryCount > MAX_CHART_POINTS) {
+                vadDataSet.removeFirst()
+                while (eotDataSet.entryCount > 0 && eotDataSet.getEntryForIndex(0).x < vadDataSet.getEntryForIndex(0).x) {
+                    eotDataSet.removeFirst()
+                }
+            }
+
+            data.notifyDataChanged()
+            probabilityChart.notifyDataSetChanged()
+            probabilityChart.setVisibleXRangeMaximum(MAX_CHART_POINTS.toFloat())
+            probabilityChart.moveViewToX(chartXIndex)
         }
+    }
+
+    private suspend fun runInference() {
+        if (speechSegment.isEmpty() || !isRecording) return
         val audio = speechSegment.toFloatArray()
+        val currentX = chartXIndex
+
         updateStatus("Analyzing...", defaultTextColor)
 
         val nFrames = maxWindowSec * 100
         var melData: FloatArray? = null
         var timeMel: Long = 0
-        var timeKotlin: Long = -1
 
-        when (inferenceMode) {
-            "native" -> {
-                val (res, time) = melSpectrogram.extractNative(audio, nFrames)
-                melData = res
-                timeMel = time
+        try {
+            when (inferenceMode) {
+                "native" -> {
+                    val (res, time) = melSpectrogram.extractNative(audio, nFrames)
+                    melData = res
+                    timeMel = time
+                }
+                "kotlin" -> {
+                    val (res, time) = melSpectrogram.extractKotlin(audio, nFrames)
+                    melData = res
+                    timeMel = time
+                }
+                "both" -> {
+                    val (resN, tN) = melSpectrogram.extractNative(audio, nFrames)
+                    melData = resN
+                    timeMel = tN
+                }
             }
-            "kotlin" -> {
-                val (res, time) = melSpectrogram.extractKotlin(audio, nFrames)
-                melData = res
-                timeMel = time
-            }
-            "both" -> {
-                val (resK, tK) = melSpectrogram.extractKotlin(audio, nFrames)
-                val (resN, tN) = melSpectrogram.extractNative(audio, nFrames)
-                melData = resN
-                timeMel = tN
-                timeKotlin = tK
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Extraction error: ${e.message}")
+            return
         }
+
+        if (melData == null || !isRecording) return
 
         var inferenceProb = 0.0f
         val startInf = System.currentTimeMillis()
         try {
-            val inputTensor = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(melData!!), longArrayOf(1, 80, nFrames.toLong()))
+            val inputTensor = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(melData), longArrayOf(1, 80, nFrames.toLong()))
             val results = smartTurnSession.run(mapOf("input_features" to inputTensor))
             results.use {
                 val output = results[0].value as Array<FloatArray>
@@ -255,15 +360,14 @@ class MainActivity : AppCompatActivity() {
         val timeInf = System.currentTimeMillis() - startInf
 
         withContext(Dispatchers.Main) {
-            val resultText = StringBuilder()
-            resultText.append("EOT Prob: %.4f\n".format(inferenceProb))
-            if (inferenceMode == "both") {
-                resultText.append("K: %d ms | N: %d ms\n".format(timeKotlin, timeMel))
-            } else {
-                resultText.append("Mel Extraction: %d ms\n".format(timeMel))
-            }
-            resultText.append("EOT Inference: %d ms".format(timeInf))
-            probabilityText.text = resultText.toString()
+            if (!isRecording) return@withContext
+            
+            probabilityChart.data.addEntry(Entry(currentX, inferenceProb), 1)
+            probabilityChart.data.notifyDataChanged()
+            probabilityChart.notifyDataSetChanged()
+
+            val resultText = "EOT Prob: %.4f\nMel: %d ms | EOT: %d ms".format(inferenceProb, timeMel, timeInf)
+            probabilityText.text = resultText
 
             if (inferenceProb > eotThreshold) {
                 updateStatus("Turn Complete!", Color.RED)
