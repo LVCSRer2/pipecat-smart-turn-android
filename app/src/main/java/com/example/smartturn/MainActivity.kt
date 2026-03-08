@@ -2,6 +2,7 @@ package com.example.smartturn
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -36,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusLabel: TextView
     private lateinit var probabilityText: TextView
     private lateinit var recordButton: Button
+    private var defaultTextColor: Int = Color.BLACK
 
     private lateinit var sileroVad: SileroVAD
     private lateinit var melSpectrogram: MelSpectrogram
@@ -53,6 +55,7 @@ class MainActivity : AppCompatActivity() {
         statusLabel = findViewById(R.id.statusLabel)
         probabilityText = findViewById(R.id.probabilityText)
         recordButton = findViewById(R.id.recordButton)
+        defaultTextColor = statusLabel.currentTextColor
 
         recordButton.setOnClickListener {
             if (isRecording) {
@@ -75,9 +78,21 @@ class MainActivity : AppCompatActivity() {
             smartTurnSession = ortEnv.createSession(modelBytes)
             
             Log.d(TAG, "Models initialized successfully")
+            updateStatus("Models Ready", false)
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing models: ${e.message}")
-            statusLabel.text = "Error: Models not found"
+            updateStatus("Error: Models missing", false)
+        }
+    }
+
+    private fun updateStatus(text: String, isHighlight: Boolean) {
+        runOnUiThread {
+            statusLabel.text = "Status: $text"
+            if (isHighlight) {
+                statusLabel.setTextColor(Color.RED)
+            } else {
+                statusLabel.setTextColor(defaultTextColor)
+            }
         }
     }
 
@@ -109,8 +124,8 @@ class MainActivity : AppCompatActivity() {
 
         audioRecord?.startRecording()
         isRecording = true
-        recordButton.text = "Stop Recording"
-        statusLabel.text = "Status: Listening..."
+        runOnUiThread { recordButton.text = "Stop Recording" }
+        updateStatus("Listening", false)
 
         recordingJob = CoroutineScope(Dispatchers.IO).launch {
             val readBuffer = ShortArray(CHUNK_SIZE)
@@ -129,8 +144,8 @@ class MainActivity : AppCompatActivity() {
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
-        recordButton.text = "Start Recording"
-        statusLabel.text = "Status: Stopped"
+        runOnUiThread { recordButton.text = "Start Recording" }
+        updateStatus("Stopped", false)
         isSpeechActive = false
         speechSegment.clear()
         trailingSilenceSamples = 0
@@ -144,7 +159,7 @@ class MainActivity : AppCompatActivity() {
         if (prob > 0.5f) {
             if (!isSpeechActive) {
                 isSpeechActive = true
-                withContext(Dispatchers.Main) { statusLabel.text = "Status: Speech Detected" }
+                updateStatus("Speech Detected", false)
             }
             trailingSilenceSamples = 0
         } else if (isSpeechActive) {
@@ -167,18 +182,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private suspend fun runComparison() {
-        if (speechSegment.isEmpty()) return
+        if (speechSegment.isEmpty()) {
+            updateStatus("No Speech", false)
+            delay(1500)
+            if (isRecording) updateStatus("Listening", false)
+            return
+        }
         val audio = speechSegment.toFloatArray()
 
-        withContext(Dispatchers.Main) { statusLabel.text = "Status: Comparing Kotlin vs Native..." }
+        updateStatus("Analyzing...", false)
 
-        // 1. Kotlin Extraction
-        val (melKotlin, timeKotlin) = melSpectrogram.extractKotlin(audio)
+        // 1. Kotlin Extraction (Internal comparison only)
+        val (_, timeKotlin) = melSpectrogram.extractKotlin(audio)
         
         // 2. Native Extraction
         val (melNative, timeNative) = melSpectrogram.extractNative(audio)
 
-        // 3. ONNX Inference (using native result)
+        // 3. ONNX Inference
         var inferenceProb = 0.0f
         try {
             val inputTensor = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(melNative), longArrayOf(1, 80, 800))
@@ -194,12 +214,19 @@ class MainActivity : AppCompatActivity() {
         withContext(Dispatchers.Main) {
             val resultText = StringBuilder()
             resultText.append("EOT Prob: %.4f\n".format(inferenceProb))
-            resultText.append("Kotlin: %d ms\n".format(timeKotlin))
-            resultText.append("Native: %d ms\n".format(timeNative))
+            resultText.append("Kotlin: %d ms | Native: %d ms\n".format(timeKotlin, timeNative))
             resultText.append("Speedup: %.1fx".format(timeKotlin.toFloat() / timeNative))
-            
             probabilityText.text = resultText.toString()
-            statusLabel.text = if (inferenceProb > 0.5) "Status: Turn Complete!" else "Status: Continued"
+
+            if (inferenceProb > 0.5) {
+                updateStatus("Turn Complete!", true)
+            } else {
+                updateStatus("Continued", false)
+            }
+            
+            // Return to Listening after 2 seconds
+            delay(2000)
+            if (isRecording) updateStatus("Listening", false)
         }
     }
 
