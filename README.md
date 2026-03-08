@@ -39,7 +39,7 @@
 - **빌드 시스템**: Gradle 8.2, CMake
 - **머신러닝 모델**:
   - Silero VAD (ONNX)
-  - Smart Turn v3.1 (ONNX, Whisper Tiny 기반)
+  - Smart Turn v3.2 (ONNX, Whisper Tiny 기반)
 
 ## 참고 자료
 

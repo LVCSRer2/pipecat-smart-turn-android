@@ -181,7 +181,7 @@ class MainActivity : AppCompatActivity() {
             ortEnv = OrtEnvironment.getEnvironment()
             sileroVad = SileroVAD(this)
             melSpectrogram = MelSpectrogram(this)
-            val modelBytes = assets.open("smart-turn-v3.1-cpu.onnx").readBytes()
+            val modelBytes = assets.open("smart-turn-v3.2-cpu.onnx").readBytes()
             smartTurnSession = ortEnv.createSession(modelBytes)
             updateStatus("Models Ready", defaultTextColor)
         } catch (e: Exception) {
