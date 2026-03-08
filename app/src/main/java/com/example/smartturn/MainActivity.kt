@@ -78,21 +78,17 @@ class MainActivity : AppCompatActivity() {
             smartTurnSession = ortEnv.createSession(modelBytes)
             
             Log.d(TAG, "Models initialized successfully")
-            updateStatus("Models Ready", false)
+            updateStatus("Models Ready", defaultTextColor)
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing models: ${e.message}")
-            updateStatus("Error: Models missing", false)
+            updateStatus("Error: Models missing", Color.RED)
         }
     }
 
-    private fun updateStatus(text: String, isHighlight: Boolean) {
+    private fun updateStatus(text: String, color: Int) {
         runOnUiThread {
             statusLabel.text = "Status: $text"
-            if (isHighlight) {
-                statusLabel.setTextColor(Color.RED)
-            } else {
-                statusLabel.setTextColor(defaultTextColor)
-            }
+            statusLabel.setTextColor(color)
         }
     }
 
@@ -125,7 +121,7 @@ class MainActivity : AppCompatActivity() {
         audioRecord?.startRecording()
         isRecording = true
         runOnUiThread { recordButton.text = "Stop Recording" }
-        updateStatus("Listening", false)
+        updateStatus("Listening", defaultTextColor)
 
         recordingJob = CoroutineScope(Dispatchers.IO).launch {
             val readBuffer = ShortArray(CHUNK_SIZE)
@@ -145,7 +141,7 @@ class MainActivity : AppCompatActivity() {
         audioRecord?.release()
         audioRecord = null
         runOnUiThread { recordButton.text = "Start Recording" }
-        updateStatus("Stopped", false)
+        updateStatus("Stopped", defaultTextColor)
         isSpeechActive = false
         speechSegment.clear()
         trailingSilenceSamples = 0
@@ -159,7 +155,7 @@ class MainActivity : AppCompatActivity() {
         if (prob > 0.5f) {
             if (!isSpeechActive) {
                 isSpeechActive = true
-                updateStatus("Speech Detected", false)
+                updateStatus("Speech Detected", defaultTextColor)
             }
             trailingSilenceSamples = 0
         } else if (isSpeechActive) {
@@ -173,7 +169,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             if (trailingSilenceSamples >= (STOP_MS * SAMPLE_RATE / 1000)) {
-                runComparison()
+                runInference()
                 isSpeechActive = false
                 speechSegment.clear()
                 trailingSilenceSamples = 0
@@ -181,25 +177,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun runComparison() {
+    private suspend fun runInference() {
         if (speechSegment.isEmpty()) {
-            updateStatus("No Speech", false)
+            updateStatus("No Speech", defaultTextColor)
             delay(1500)
-            if (isRecording) updateStatus("Listening", false)
+            if (isRecording) updateStatus("Listening", defaultTextColor)
             return
         }
         val audio = speechSegment.toFloatArray()
 
-        updateStatus("Analyzing...", false)
+        updateStatus("Analyzing...", defaultTextColor)
 
-        // 1. Kotlin Extraction (Internal comparison only)
-        val (_, timeKotlin) = melSpectrogram.extractKotlin(audio)
-        
-        // 2. Native Extraction
-        val (melNative, timeNative) = melSpectrogram.extractNative(audio)
+        // 1. Native Feature Extraction
+        val (melNative, timeMel) = melSpectrogram.extractNative(audio)
 
-        // 3. ONNX Inference
+        // 2. Smart Turn ONNX Inference (EOT Determination)
         var inferenceProb = 0.0f
+        val startInf = System.currentTimeMillis()
         try {
             val inputTensor = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(melNative), longArrayOf(1, 80, 800))
             val results = smartTurnSession.run(mapOf("input_features" to inputTensor))
@@ -210,23 +204,24 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.e(TAG, "Inference error: ${e.message}")
         }
+        val timeInf = System.currentTimeMillis() - startInf
 
         withContext(Dispatchers.Main) {
             val resultText = StringBuilder()
             resultText.append("EOT Prob: %.4f\n".format(inferenceProb))
-            resultText.append("Kotlin: %d ms | Native: %d ms\n".format(timeKotlin, timeNative))
-            resultText.append("Speedup: %.1fx".format(timeKotlin.toFloat() / timeNative))
+            resultText.append("Mel Extraction: %d ms\n".format(timeMel))
+            resultText.append("EOT Inference: %d ms".format(timeInf))
             probabilityText.text = resultText.toString()
 
             if (inferenceProb > 0.5) {
-                updateStatus("Turn Complete!", true)
+                updateStatus("Turn Complete!", Color.RED)
             } else {
-                updateStatus("Continued", false)
+                updateStatus("Continued", Color.BLUE)
             }
             
             // Return to Listening after 2 seconds
             delay(2000)
-            if (isRecording) updateStatus("Listening", false)
+            if (isRecording) updateStatus("Listening", defaultTextColor)
         }
     }
 
