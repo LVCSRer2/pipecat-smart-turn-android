@@ -65,11 +65,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var continuedDataSet: LineDataSet
     private var chartXIndex = 0f
 
+    // Settings
     private var stopMs = 1000
     private var vadThreshold = 0.5f
     private var eotThreshold = 0.5f
     private var maxWindowSec = 8
     private var inferenceMode = "native"
+    private var maintainContext = true
+    private var displayTimeMs = 2000
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -156,6 +159,8 @@ class MainActivity : AppCompatActivity() {
         eotThreshold = prefs.getInt("eot_threshold", 50) / 100f
         maxWindowSec = prefs.getString("max_window", "8")?.toInt() ?: 8
         inferenceMode = prefs.getString("inference_mode", "native") ?: "native"
+        maintainContext = prefs.getBoolean("maintain_context", true)
+        displayTimeMs = prefs.getInt("display_time", 2000)
     }
 
     override fun onResume() {
@@ -281,6 +286,7 @@ class MainActivity : AppCompatActivity() {
             trailingSilenceSamples += count
         }
 
+        // Always add to buffer if recording and speech has occurred
         if (isSpeechActive) {
             for (f in chunk) speechSegment.add(f)
             val maxSamples = maxWindowSec * SAMPLE_RATE
@@ -290,8 +296,7 @@ class MainActivity : AppCompatActivity() {
 
             if (trailingSilenceSamples >= (stopMs * SAMPLE_RATE / 1000)) {
                 runInference()
-                isSpeechActive = false
-                speechSegment.clear()
+                // Silence threshold met, reset internal silence counter
                 trailingSilenceSamples = 0
             }
         }
@@ -377,7 +382,8 @@ class MainActivity : AppCompatActivity() {
         withContext(Dispatchers.Main) {
             if (!isRecording) return@withContext
             
-            if (inferenceProb > eotThreshold) {
+            val isEot = inferenceProb > eotThreshold
+            if (isEot) {
                 probabilityChart.data.addEntry(Entry(currentX, inferenceProb), 1)
                 updateStatus("Turn Complete!", Color.RED)
             } else {
@@ -391,6 +397,16 @@ class MainActivity : AppCompatActivity() {
             val resultText = "EOT Prob: %.4f\nMel: %d ms | EOT: %d ms".format(inferenceProb, timeMel, timeInf)
             probabilityText.text = resultText
             
+            // Logic for maintaining context
+            if (isEot || !maintainContext) {
+                // If turn is finished OR maintain mode is OFF, clear buffer for next interaction
+                speechSegment.clear()
+                isSpeechActive = false
+            } else {
+                // Continued + maintain mode is ON: Keep speechSegment as is (Sliding window already handles size)
+                Log.d(TAG, "Maintaining context for Continued utterance")
+            }
+
             if (isRecording) {
                 delay(100)
                 updateStatus("Listening", defaultTextColor)

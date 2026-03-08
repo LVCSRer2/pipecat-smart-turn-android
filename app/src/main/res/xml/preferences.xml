@@ -42,6 +42,12 @@
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Inference &amp; UI">
+        <SwitchPreferenceCompat
+            app:defaultValue="true"
+            app:key="maintain_context"
+            app:title="Maintain Audio Context"
+            app:summary="Keep audio context if turn is not complete (Sliding window)" />
+
         <ListPreference
             android:defaultValue="native"
             android:entries="@array/mode_entries"
