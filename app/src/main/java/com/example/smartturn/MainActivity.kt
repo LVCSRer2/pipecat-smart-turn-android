@@ -42,7 +42,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ortEnv: OrtEnvironment
     private lateinit var smartTurnSession: OrtSession
 
-    // Buffers
     private val speechSegment = mutableListOf<Float>()
     private var trailingSilenceSamples = 0
     private var isSpeechActive = false
@@ -78,7 +77,7 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "Models initialized successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing models: ${e.message}")
-            statusLabel.text = "Error: Models not found in assets"
+            statusLabel.text = "Error: Models not found"
         }
     }
 
@@ -106,11 +105,7 @@ class MainActivity : AppCompatActivity() {
         }
         
         audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
-
-        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-            Log.e(TAG, "AudioRecord initialization failed")
-            return
-        }
+        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) return
 
         audioRecord?.startRecording()
         isRecording = true
@@ -143,39 +138,27 @@ class MainActivity : AppCompatActivity() {
 
     private suspend fun processAudioChunk(shorts: ShortArray, count: Int) {
         val chunk = FloatArray(count)
-        for (i in 0 until count) {
-            chunk[i] = shorts[i] / 32768.0f
-        }
-
+        for (i in 0 until count) chunk[i] = shorts[i] / 32768.0f
         val prob = sileroVad.predict(chunk)
         
         if (prob > 0.5f) {
             if (!isSpeechActive) {
                 isSpeechActive = true
-                withContext(Dispatchers.Main) {
-                    statusLabel.text = "Status: Speech Detected"
-                }
+                withContext(Dispatchers.Main) { statusLabel.text = "Status: Speech Detected" }
             }
-            isSpeechActive = true
             trailingSilenceSamples = 0
-        } else {
-            if (isSpeechActive) {
-                trailingSilenceSamples += count
-            }
+        } else if (isSpeechActive) {
+            trailingSilenceSamples += count
         }
 
         if (isSpeechActive) {
             for (f in chunk) speechSegment.add(f)
-            
-            // Limit buffer size to 8 seconds
             if (speechSegment.size > MAX_DURATION_SAMPLES) {
-                val toRemove = speechSegment.size - MAX_DURATION_SAMPLES
-                repeat(toRemove) { speechSegment.removeAt(0) }
+                repeat(speechSegment.size - MAX_DURATION_SAMPLES) { speechSegment.removeAt(0) }
             }
 
-            // Check if silence lasted long enough to trigger Smart Turn
             if (trailingSilenceSamples >= (STOP_MS * SAMPLE_RATE / 1000)) {
-                runSmartTurn()
+                runComparison()
                 isSpeechActive = false
                 speechSegment.clear()
                 trailingSilenceSamples = 0
@@ -183,43 +166,40 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun runSmartTurn() {
+    private suspend fun runComparison() {
         if (speechSegment.isEmpty()) return
+        val audio = speechSegment.toFloatArray()
 
-        withContext(Dispatchers.Main) {
-            statusLabel.text = "Status: Analyzing turn..."
-        }
+        withContext(Dispatchers.Main) { statusLabel.text = "Status: Comparing Kotlin vs Native..." }
 
+        // 1. Kotlin Extraction
+        val (melKotlin, timeKotlin) = melSpectrogram.extractKotlin(audio)
+        
+        // 2. Native Extraction
+        val (melNative, timeNative) = melSpectrogram.extractNative(audio)
+
+        // 3. ONNX Inference (using native result)
+        var inferenceProb = 0.0f
         try {
-            Log.d(TAG, "Starting Smart Turn analysis for ${speechSegment.size} samples")
-            val audio = speechSegment.toFloatArray()
-            Log.d(TAG, "Audio converted to FloatArray. Extracting Mel Spectrogram...")
-            val mel = melSpectrogram.extract(audio)
-            Log.d(TAG, "Mel Spectrogram extracted. Running ONNX inference...")
-            
-            // Smart Turn expects [1, 80, 800]
-            val inputTensor = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(mel), longArrayOf(1, 80, 800))
-            
+            val inputTensor = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(melNative), longArrayOf(1, 80, 800))
             val results = smartTurnSession.run(mapOf("input_features" to inputTensor))
-            Log.d(TAG, "ONNX inference completed.")
             results.use {
                 val output = results[0].value as Array<FloatArray>
-                val probability = output[0][0]
-
-                withContext(Dispatchers.Main) {
-                    probabilityText.text = String.format("EOT Probability: %.4f", probability)
-                    if (probability > 0.5) {
-                        statusLabel.text = "Status: Turn Complete! (AI response)"
-                    } else {
-                        statusLabel.text = "Status: Continued (User still talking)"
-                    }
-                }
+                inferenceProb = output[0][0]
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Smart Turn error: ${e.message}", e)
-            withContext(Dispatchers.Main) {
-                statusLabel.text = "Status: Error during analysis"
-            }
+            Log.e(TAG, "Inference error: ${e.message}")
+        }
+
+        withContext(Dispatchers.Main) {
+            val resultText = StringBuilder()
+            resultText.append("EOT Prob: %.4f\n".format(inferenceProb))
+            resultText.append("Kotlin: %d ms\n".format(timeKotlin))
+            resultText.append("Native: %d ms\n".format(timeNative))
+            resultText.append("Speedup: %.1fx".format(timeKotlin.toFloat() / timeNative))
+            
+            probabilityText.text = resultText.toString()
+            statusLabel.text = if (inferenceProb > 0.5) "Status: Turn Complete!" else "Status: Continued"
         }
     }
 
