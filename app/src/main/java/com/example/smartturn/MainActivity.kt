@@ -309,7 +309,6 @@ class MainActivity : AppCompatActivity() {
             if (vadDataSet.entryCount > MAX_CHART_POINTS) {
                 vadDataSet.removeFirst()
                 val minX = vadDataSet.getEntryForIndex(0).x
-                
                 while (eotDataSet.entryCount > 0 && eotDataSet.getEntryForIndex(0).x < minX) {
                     eotDataSet.removeFirst()
                 }
@@ -392,11 +391,8 @@ class MainActivity : AppCompatActivity() {
             val resultText = "EOT Prob: %.4f\nMel: %d ms | EOT: %d ms".format(inferenceProb, timeMel, timeInf)
             probabilityText.text = resultText
             
-            // Immediately back to Listening (or after a very short delay for perception)
-            // Removed 2 second delay
             if (isRecording) {
-                // Keep the result text visible but update status to show we're ready again
-                delay(100) // Minimal flicker prevention
+                delay(100)
                 updateStatus("Listening", defaultTextColor)
             }
         }
