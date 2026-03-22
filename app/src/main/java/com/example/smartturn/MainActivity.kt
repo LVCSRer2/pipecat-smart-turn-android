@@ -107,6 +107,22 @@ class MainActivity : AppCompatActivity() {
         probabilityChart.setPinchZoom(false)
         probabilityChart.setBackgroundColor(Color.WHITE)
 
+        val xl = probabilityChart.xAxis
+        xl.setDrawGridLines(true)
+        xl.isEnabled = true
+
+        val leftAxis = probabilityChart.axisLeft
+        leftAxis.axisMaximum = 1.1f
+        leftAxis.axisMinimum = -0.1f
+        leftAxis.setDrawGridLines(true)
+
+        val rightAxis = probabilityChart.axisRight
+        rightAxis.isEnabled = false
+
+        resetChartData()
+    }
+
+    private fun resetChartData() {
         val data = LineData()
         probabilityChart.data = data
 
@@ -140,17 +156,8 @@ class MainActivity : AppCompatActivity() {
         continuedDataSet.axisDependency = YAxis.AxisDependency.LEFT
         data.addDataSet(continuedDataSet)
 
-        val xl = probabilityChart.xAxis
-        xl.setDrawGridLines(true)
-        xl.isEnabled = true
-
-        val leftAxis = probabilityChart.axisLeft
-        leftAxis.axisMaximum = 1.1f
-        leftAxis.axisMinimum = -0.1f
-        leftAxis.setDrawGridLines(true)
-
-        val rightAxis = probabilityChart.axisRight
-        rightAxis.isEnabled = false
+        chartXIndex = 0f
+        probabilityChart.invalidate()
     }
 
     private fun loadSettings() {
@@ -227,14 +234,8 @@ class MainActivity : AppCompatActivity() {
 
             audioRecord?.startRecording()
             isRecording = true
-            
-            vadDataSet.clear()
-            eotDataSet.clear()
-            continuedDataSet.clear()
-            chartXIndex = 0f
-            probabilityChart.data.notifyDataChanged()
-            probabilityChart.notifyDataSetChanged()
-            probabilityChart.invalidate()
+
+            resetChartData()
 
             runOnUiThread { recordButton.text = "Stop Recording" }
             updateStatus("Listening", defaultTextColor)
